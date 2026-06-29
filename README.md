@@ -1,6 +1,5 @@
-# _virtual lab name_
-_abstract_
+# _NatureDataCube_ Virtual Lab
 
-### keywords
-- _keyword1_
-- _keyword2_
+_Simplifying the retrieval of relevant data for ecologists._
+
+This virtual lab was created for testing workflows and for training purposes involving _NatureDataCube_.
