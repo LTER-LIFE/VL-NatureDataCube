@@ -4,11 +4,11 @@
 # ------------------------------------------------------------------------------
 #  PURPOSE (please read)
 #  This is NOT a coding exercise. It is a guided tour of the Nature Data Cube
-#  (NDC) and the data it produces, using a real nest-box dataset as motivation.
-#  As you go, we ask for your feedback so we can see whether you find the NDC
+#  (NDC), using a real nest-box dataset as motivation.
+#  at the end, we ask for your feedback so we can see whether you find the NDC
 #  useful, understandable, and intuitive.
 #
-#  HOW IT FLOWS: we start with an ecological question, meet the birds, then visit
+#  How it works: we start with an ecological question, meet the birds, then visit
 #  the NDC to fetch "greenness" (NDVI), look at what it gives us as a table and
 #  as a map, and finally link greenness to breeding. Run each block in order
 #  (Ctrl/Cmd + Enter); maps and charts appear in the Viewer / Plots pane.
@@ -19,20 +19,20 @@
 # 0.  SETUP
 # ==============================================================================
 # Run this block once at the start. It loads the tools and points R at the data.
-# install.packages(c("tidyverse","lubridate","sf","terra","leaflet","plotly","scales"))
+# install.packages(c("ggplot2","lubridate","sf","terra","leaflet","scales","geojsonio"))
 
 suppressPackageStartupMessages({
-  library(tidyverse)
-  library(lubridate)
-  library(sf)
+  library(ggplot2)    # plotting
+  library(lubridate)  # dates
+  library(sf)         # vector / polygon
   library(terra)      # NDVI raster
-  library(leaflet)    # interactive maps
-  library(plotly)     # interactive charts
+  library(leaflet)    # interactive maps (also provides the %>% pipe)
   library(scales)
+  library(geojsonio)  # read/write GeoJSON
 })
 
 # ---- Where the downloaded NDC data lives -----------------------------------
-data_dir <- "."   # <-- change if your files are elsewhere
+data_dir <- "~/Cloud Storage/naa-vre-public/vl-nature-data-cube"   # path to the data in MinIO
 
 f_nest    <- file.path(data_dir, "nest_data.csv")
 f_summary <- file.path(data_dir, "download_summary.csv")
@@ -70,8 +70,8 @@ theme_ndc <- function() {
 # Songbirds time breeding to the spring flush of vegetation, which drives the
 # caterpillar peak their chicks depend on. So our motivating question is:
 #
-#     Do birds breed earlier and lay more in years when the landscape greens up
-#     MORE, compared to less-green years?
+#     Do birds breed earlier in years when the landscape greens up more,
+#     compared to less-green years?
 #
 # We can't answer that from the birds alone — we need a measure of how green each
 # spring was. That is exactly what the Nature Data Cube can give us. Keep this
@@ -84,7 +84,7 @@ theme_ndc <- function() {
 # A few words so the rest makes sense:
 # * Nest box : artificial cavity; here at fixed locations on the Veluwe.
 # * Lay date : day the first egg is laid (also given as day-of-year, ld_doy).
-# * Clutch   : number of eggs in one attempt.
+# * Clutch   : number of eggs.
 # * NDVI     : satellite "greenness", ~0 (bare) to ~1 (dense vegetation).
 # The idea we are testing: greener springs -> more insect food -> birds may breed
 # earlier and/or lay larger clutches in those years.
@@ -94,20 +94,23 @@ theme_ndc <- function() {
 # 3.  EXPLORE THE NEST-BOX DATA  (meet the birds)
 # ==============================================================================
 # First we get to know the birds on their own — how much data we have, what the
-# clutches look like, and crucially WHEN they lay. This is the "response" side of
+# clutches look like, and crucially when they lay. This is the "response" side of
 # our question; greenness comes later.
-nest <- read_csv(f_nest, show_col_types = FALSE) %>%
-  mutate(lay_date = as.Date(lay_date),
-         species  = factor(species, levels = names(species_pal)))
+nest <- read.csv(f_nest, stringsAsFactors = FALSE)
+nest$lay_date <- as.Date(nest$lay_date)
+nest$species  <- factor(nest$species, levels = names(species_pal))
 
-glimpse(nest)   # 2,065 records | 2019-2025 | 439 boxes | 3 species
+str(nest)   # 2,065 records | 2019-2025 | 439 boxes | 3 species
 
 # ---- 3a. Records per year, per species -------------------------------------
 # Are some years better sampled than others? If effort is steady, later
 # differences between years reflect the birds, not how hard we looked.
-p_year <- nest %>% count(year, species) %>%
-  ggplot(aes(year, n, fill = species,
-             text = paste0(species, " — ", year, ": ", n, " nests"))) +
+year_counts <- as.data.frame(table(year = nest$year, species = nest$species),
+                             responseName = "n")
+year_counts$year    <- as.integer(as.character(year_counts$year))
+year_counts$species <- factor(year_counts$species, levels = names(species_pal))
+
+p_year <- ggplot(year_counts, aes(year, n, fill = species)) +
   geom_col() +
   scale_fill_manual(values = species_pal, name = NULL) +
   scale_x_continuous(breaks = 2019:2025) +
@@ -115,39 +118,37 @@ p_year <- nest %>% count(year, species) %>%
        subtitle = "Consistent monitoring effort across 2019-2025",
        x = NULL, y = "Number of nests") +
   theme_ndc()
-ggplotly(p_year, tooltip = "text")
+p_year
 # Effort is steady, so year-to-year differences reflect the birds, not sampling.
 
-# ---- 3c. Clutch-size distribution ------------------------------------------
+# ---- 3b. Clutch-size distribution ------------------------------------------
 # How many eggs do these species typically lay? This is the "how many" half of
 # our question, before greenness enters the picture.
-p_clutch <- nest %>%
-  ggplot(aes(clutch_size, fill = species)) +
+p_clutch <- ggplot(nest, aes(clutch_size, fill = species)) +
   geom_histogram(binwidth = 1, colour = "white", alpha = 0.9) +
   facet_wrap(~species, ncol = 1, scales = "free_y") +
   scale_fill_manual(values = species_pal, guide = "none") +
   labs(title = "Clutch-size distribution", subtitle = "Most clutches are 6-12 eggs",
        x = "Clutch size (eggs)", y = "Number of nests") +
   theme_ndc()
-ggplotly(p_clutch)
+p_clutch
 # Clutches centre on 8-9 eggs with a long single-digit tail — nothing unusual.
 
-# ---- 3d. Timing of laying --------------------------------------------------
-# This is the key plot for our question: WHEN in the year do eggs appear? Each
+# ---- 3c. Timing of laying --------------------------------------------------
+# This is the key plot for our question: when in the year do eggs appear? Each
 # line counts the number of nests started in ~5-day windows through the spring.
-p_laydate <- nest %>%
-  ggplot(aes(ld_doy, colour = species)) +
+p_laydate <- ggplot(nest, aes(ld_doy, colour = species)) +
   geom_freqpoly(binwidth = 5, linewidth = 1) +
   scale_colour_manual(values = species_pal, name = NULL) +
   labs(title = "Timing of egg-laying",
        subtitle = "Number of nests started, in 5-day windows",
        x = "Lay date (day of year)", y = "Number of nests") +
   theme_ndc()
-ggplotly(p_laydate)
+p_laydate
 # Laying peaks in mid-late April (day ~100-120). That spring window is where we
 # will look for a greenness signal later on.
 
-# ---- 3e. Where are the boxes? ----------------------------------------------
+# ---- 3d. Where are the boxes? ----------------------------------------------
 # The boxes sit at fixed spots. Their locations matter because in Section 8 we
 # will read the greenness right at each box from the NDVI map.
 nest_sf <- st_as_sf(nest, coords = c("lon_dd", "lat_dd"), crs = 4326, remove = FALSE)
@@ -174,7 +175,7 @@ feedback("Before opening the NDC: what environmental context would you most ",
 # ==============================================================================
 # Now we leave the birds for a moment and fetch the environment. Open the NDC and
 # *mimic* a download of NDVI for our area. The data is already saved locally, so
-# you do NOT need to keep anything you download — the point is to experience the
+# you do NOT need to actually download anything — the point is to experience the
 # workflow and judge it.
 #
 #   Open:  https://lter-life-experience.org/naturedatacube/
@@ -196,8 +197,8 @@ feedback("Before opening the NDC: what environmental context would you most ",
 # ==============================================================================
 # Every NDC download comes with a manifest that lists exactly what you got. Let's
 # read it, so we know which files feed the rest of the tutorial.
-download_summary <- read_csv(f_summary, show_col_types = FALSE)
-print(download_summary %>% select(dataset, view, file_type, status, note))
+download_summary <- read.csv(f_summary, stringsAsFactors = FALSE)
+print(download_summary[, c("dataset", "view", "file_type", "status", "note")])
 
 # For this area we received (all three "ok"):
 #   * NDVI Statistics (a table of monthly mean greenness)   -> Section 6
@@ -215,62 +216,62 @@ print(download_summary %>% select(dataset, view, file_type, status, note))
 #
 # This first output is a table: one average greenness value per month for the
 # whole area. Let's watch how greenness moves through the year.
-ndvi <- read_csv(f_ndvi, show_col_types = FALSE) %>%
-  mutate(date = ymd(paste0(month, "-01")),
-         yr = year(date), mon = month(date),
-         mon_lab = month(date, label = TRUE)) %>%
-  arrange(date)
+ndvi <- read.csv(f_ndvi, stringsAsFactors = FALSE)
+ndvi$date    <- ymd(paste0(ndvi$month, "-01"))
+ndvi$yr      <- year(ndvi$date)
+ndvi$mon     <- month(ndvi$date)
+ndvi$mon_lab <- month(ndvi$date, label = TRUE)
+ndvi <- ndvi[order(ndvi$date), ]
 
 # ---- 6a. Monthly NDVI time series ------------------------------------------
-# The raw monthly series, with a band for how variable greenness is within the
+# The monthly series, with a band for how variable greenness is within the
 # area each month.
 p_ts <- ggplot(ndvi, aes(date, ndvi_mean)) +
   geom_ribbon(aes(ymin = ndvi_mean - ndvi_std, ymax = ndvi_mean + ndvi_std),
               fill = "#009E73", alpha = 0.15) +
   geom_line(colour = "#009E73", linewidth = 0.8) +
-  geom_point(aes(text = paste0(month, ": NDVI ", round(ndvi_mean, 2))),
-             colour = "#009E73", size = 1.4) +
+  geom_point(colour = "#009E73", size = 1.4) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(title = "Monthly NDVI for the nest-box area",
        subtitle = "Shaded band = +/- 1 SD within the area",
        x = NULL, y = "NDVI (greenness)") +
   theme_ndc()
-ggplotly(p_ts, tooltip = "text")
+p_ts
 # Clean seasonal cycle: low in winter (~0.5), peaking in summer (~0.77).
 
-# ---- 6b. Seasonal pattern (climatology) ------------------------------------
-# Stacking all years on top of each other shows the TYPICAL year. The steep
+# ---- 6b. Seasonal pattern ------------------------------------
+# Stacking all years on top of each other shows the typical year. The steep
 # March -> May rise is "green-up" — the breeding-relevant window.
-ndvi_clim <- ndvi %>% group_by(mon, mon_lab) %>%
-  summarise(ndvi = mean(ndvi_mean), .groups = "drop")
-p_season <- ggplot(ndvi_clim, aes(mon_lab, ndvi, group = 1,
-                                  text = paste0(mon_lab, ": ", round(ndvi, 2)))) +
+ndvi_clim <- aggregate(ndvi_mean ~ mon + mon_lab, data = ndvi, FUN = mean)
+names(ndvi_clim)[names(ndvi_clim) == "ndvi_mean"] <- "ndvi"
+ndvi_clim <- ndvi_clim[order(ndvi_clim$mon), ]
+p_season <- ggplot(ndvi_clim, aes(mon_lab, ndvi, group = 1)) +
   geom_line(colour = "#009E73", linewidth = 0.9) +
   geom_point(colour = "#009E73", size = 2) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(title = "Typical greenness through the year",
        subtitle = "Averaged over 2019-2025", x = NULL, y = "Mean NDVI") +
   theme_ndc()
-ggplotly(p_season, tooltip = "text")
+p_season
 
 # ---- 6c. One "spring greenness" number per year ----------------------------
 # WHY THIS STEP: in Section 8 we want to ask "in greener springs, do birds lay
-# earlier?" To do that we need ONE number per year that captures how green that
-# spring was. So for each year we AVERAGE the spring months (March, April, May)
+# earlier?" To do that we need one number per year that captures how green that
+# spring was. So for each year we average the spring months (March, April, May)
 # into a single value: the year's "spring NDVI". The bars below are simply those
 # seven yearly averages (the y-axis is zoomed in because the year-to-year
 # differences are small, but real).
-spring_ndvi <- ndvi %>% filter(mon %in% c(3, 4, 5)) %>%
-  group_by(yr) %>% summarise(spring_ndvi = mean(ndvi_mean), .groups = "drop")
-p_spring <- ggplot(spring_ndvi, aes(factor(yr), spring_ndvi,
-                                    text = paste0(yr, ": ", round(spring_ndvi, 3)))) +
+spring_rows <- ndvi[ndvi$mon %in% c(3, 4, 5), ]
+spring_ndvi <- aggregate(ndvi_mean ~ yr, data = spring_rows, FUN = mean)
+names(spring_ndvi)[names(spring_ndvi) == "ndvi_mean"] <- "spring_ndvi"
+p_spring <- ggplot(spring_ndvi, aes(factor(yr), spring_ndvi)) +
   geom_col(fill = "#009E73", alpha = 0.85) +
   coord_cartesian(ylim = range(spring_ndvi$spring_ndvi) + c(-0.02, 0.02)) +
   labs(title = "Early-spring greenness by year",
        subtitle = "Average March-May NDVI (whole area) — one value per year",
        x = NULL, y = "Spring NDVI") +
   theme_ndc()
-ggplotly(p_spring, tooltip = "text")
+p_spring
 
 feedback("Are these statistics clear on their own, or do you also need the ",
          "NDVI map to interpret and trust them?")
@@ -284,7 +285,7 @@ feedback("Are these statistics clear on their own, or do you also need the ",
 # ==============================================================================
 # The second NDC output is a raster: greenness for every 10 m pixel, every month
 # (layers named NDVI_YYYYMM), already in NDVI units (0-1). The table told us
-# greenness over TIME; the map shows it over SPACE.
+# greenness over time; the map shows it over space
 ndvi_r <- rast(f_raster)
 
 # Which calendar month does each layer belong to? (NDVI_YYYYMM -> the "MM" part)
@@ -339,16 +340,19 @@ m %>%
 # ==============================================================================
 # We now hold both halves: the birds (Section 3) and greenness as numbers
 # (Section 6) and as a map (Section 7). Time to put them together and answer the
-# question we opened with. We look through TWO lenses, because they tell us
-# different things: between YEARS (is a green spring an early spring?) and
-# between SPECIES (do the three birds differ, and is that about greenness?).
+# question we opened with. We look through two lenses, because they tell us
+# different things: between years (is a green spring an early spring?) and
+# between species (do the three birds differ, and is that about greenness?).
 
 # ---- 8a. BETWEEN YEARS (n = 7) — a weather/phenology signal -----------------
 # Line up each year's spring greenness (from 6c) against how early the birds laid
 # that year. Hypothesis: greener (warmer) springs -> earlier laying.
-annual <- nest %>% group_by(yr = year) %>%
-  summarise(mean_lay_doy = mean(ld_doy), n_nests = n(), .groups = "drop") %>%
-  left_join(spring_ndvi, by = "yr")
+agg_mean <- aggregate(ld_doy ~ year, data = nest, FUN = mean)
+agg_n    <- aggregate(ld_doy ~ year, data = nest, FUN = length)
+annual   <- data.frame(yr           = agg_mean$year,
+                       mean_lay_doy = agg_mean$ld_doy,
+                       n_nests      = agg_n$ld_doy)
+annual   <- merge(annual, spring_ndvi, by = "yr")
 
 ct_t  <- cor.test(annual$spring_ndvi, annual$mean_lay_doy)
 note_t <- sprintf("r = %.2f, p = %.2f (n = %d years) — ILLUSTRATIVE ONLY",
@@ -372,21 +376,25 @@ p_t   # static ggplot, so the point-size legend (sample size) shows; years label
 # Using the MAP, we read the spring greenness at each box, then ask: do the three
 # species nest in DIFFERENT greenness, and does that explain their very different
 # laying times? First, the per-box spring NDVI:
-box_loc <- nest %>% distinct(nestbox_id, lon_dd, lat_dd)
-box_sf  <- st_as_sf(box_loc, coords = c("lon_dd", "lat_dd"), crs = 4326) %>%
-  st_transform(crs(ndvi_r))
+box_loc <- unique(nest[, c("nestbox_id", "lon_dd", "lat_dd")])
+box_sf  <- st_as_sf(box_loc, coords = c("lon_dd", "lat_dd"), crs = 4326)
+box_sf  <- st_transform(box_sf, crs(ndvi_r))
 spring_stack <- ndvi_r[[which(lyr_mon %in% c(3, 4, 5))]]
 ex <- terra::extract(spring_stack, vect(box_sf))            # ID + spring layers
 box_loc$box_spring_ndvi <- rowMeans(ex[, -1], na.rm = TRUE) # mean spring NDVI/box
 
-# Attach each box's greenness to its nests, then summarise per species:
-species_summary <- nest %>%
-  left_join(box_loc %>% select(nestbox_id, box_spring_ndvi), by = "nestbox_id") %>%
-  group_by(species) %>%
-  summarise(mean_spring_ndvi = mean(box_spring_ndvi, na.rm = TRUE),
-            mean_lay_doy     = mean(ld_doy),
-            mean_clutch      = mean(clutch_size),
-            n_nests          = n(), .groups = "drop")
+# Attach each box's greenness to its nests, then summarise per species (base R):
+nest_ndvi <- merge(nest, box_loc[, c("nestbox_id", "box_spring_ndvi")],
+                   by = "nestbox_id", all.x = TRUE)
+species_summary <- do.call(rbind, lapply(
+  split(nest_ndvi, nest_ndvi$species),
+  function(d) data.frame(
+    species          = d$species[1],
+    mean_spring_ndvi = mean(d$box_spring_ndvi, na.rm = TRUE),
+    mean_lay_doy     = mean(d$ld_doy),
+    mean_clutch      = mean(d$clutch_size),
+    n_nests          = nrow(d))))
+rownames(species_summary) <- NULL
 print(species_summary)
 
 # Plot: one point per species. x = greenness it nests in, y = when it lays,
@@ -405,11 +413,11 @@ p_sp <- ggplot(species_summary, aes(mean_spring_ndvi, mean_lay_doy)) +
   theme_ndc()
 p_sp  # static ggplot, so the point-size legend (clutch) shows; species labelled
 
-# ---- 8c. WHAT THE TWO LENSES TELL US (the punchline) -----------------------
+# ---- 8c. WHAT THE TWO LENSES TELL US -----------------------
 # BETWEEN YEARS, greenness tracks timing: a greener spring is an earlier spring
 # for everyone (a weather / phenology response).
 # BETWEEN SPECIES, the picture is different: blue tits, great tits and pied
-# flycatchers all nest in almost the SAME greenness, yet pied flycatchers lay
+# flycatchers all nest in almost the same greenness, yet pied flycatchers lay
 # ~18 days later and ~3 fewer eggs than blue tits. Those differences are about
 # the BIRD (its life history), not about local greenness.
 # Together: greenness helps explain change over TIME, not the differences
